@@ -2,10 +2,12 @@
 # shellcheck disable=SC2034
 
 iso_name="catos"
-iso_label="CATOS"
+build_epoch="${SOURCE_DATE_EPOCH:-$(date +%s)}"
+build_date="$(date --date="@${build_epoch}" +%Y%m%d)"
+iso_label="CATOS_${build_date}"
 iso_publisher="CatOS"
 iso_application="CatOS Live/Rescue CD"
-iso_version="$(date +%Y.%m.%d)"
+iso_version="$(date --date="@${build_epoch}" +%Y.%m.%d)"
 install_dir="arch"
 buildmodes=('iso')
 bootmodes=('bios.syslinux' 'uefi.grub')
