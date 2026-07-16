@@ -192,7 +192,4 @@ zsh
 chwd
 nvidia-utils
 nvidia-open
-zfs-linux
-zfs-linux-headers
-zfs-utils
 libunwind
