@@ -63,7 +63,6 @@ firefox-i18n-zh-cn
 fish
 flatpak
 fsarchiver
-fwupd
 gparted
 gpm
 gptfdisk
@@ -120,7 +119,6 @@ nmap
 noto-fonts-emoji
 ntfs-3g
 nvme-cli
-octopi
 okular
 openconnect
 open-iscsi
@@ -142,7 +140,6 @@ qemu-guest-agent
 qt6-virtualkeyboard
 rsync
 rxvt-unicode-terminfo
-screen
 sddm
 sdparm
 sg3_utils
@@ -153,7 +150,6 @@ squashfs-tools
 sudo
 syslinux
 system-config-printer
-systemd-resolvconf
 tcpdump
 terminus-font
 testdisk
