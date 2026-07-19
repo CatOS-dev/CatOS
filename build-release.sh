@@ -93,12 +93,35 @@ trap 'rm -rf -- "$staging_root"' EXIT
 staged_profile="${staging_root}/${profile_name}"
 cp -a -- "$source_profile" "$staged_profile"
 snapshot_conf="${staged_profile}/pacman.snapshot.conf"
+profile_keyring_dir="${staged_profile}/airootfs/usr/share/pacman/keyrings"
+build_gpg_dir="${staging_root}/pacman-gnupg"
+
+for keyring in arch4edu catos; do
+  for suffix in gpg trusted revoked; do
+    keyring_file="${profile_keyring_dir}/${keyring}-${suffix}"
+    if [[ "$suffix" == gpg ]]; then
+      keyring_file="${profile_keyring_dir}/${keyring}.gpg"
+    fi
+    if [[ ! -f "$keyring_file" ]]; then
+      printf 'Profile keyring file not found: %s\n' "$keyring_file" >&2
+      exit 1
+    fi
+  done
+done
+
+pacman-key --gpgdir "$build_gpg_dir" --init
+pacman-key --gpgdir "$build_gpg_dir" --populate archlinux archlinuxcn
+pacman-key \
+  --gpgdir "$build_gpg_dir" \
+  --populate-from "$profile_keyring_dir" \
+  --populate arch4edu catos
 
 awk \
   -v official_server="$official_server" \
   -v archlinuxcn_server="$ARCHLINUXCN_SNAPSHOT_SERVER" \
   -v arch4edu_server="$ARCH4EDU_SNAPSHOT_SERVER" \
   -v catos_server="$CATOS_SNAPSHOT_SERVER" \
+  -v gpg_dir="$build_gpg_dir" \
   '
   function replacement(section) {
     if (section == "core" || section == "extra" || section == "multilib") {
@@ -120,6 +143,10 @@ awk \
     section = substr($0, 2, length($0) - 2)
     server = replacement(section)
     print
+    if (section == "options") {
+      print "GPGDir = " gpg_dir
+      gpg_configured = 1
+    }
     if (server != "") {
       print "Server = " server
       rewritten[section] = 1
@@ -128,6 +155,14 @@ awk \
   }
 
   replacement(section) != "" && /^(Server|Include)[[:space:]]*=/ {
+    next
+  }
+
+  section == "catos" && /^[[:space:]]*SigLevel[[:space:]]*=/ {
+    next
+  }
+
+  section == "options" && /^[[:space:]]*GPGDir[[:space:]]*=/ {
     next
   }
 
@@ -140,6 +175,10 @@ awk \
     required["archlinuxcn"] = 1
     required["arch4edu"] = 1
     required["catos"] = 1
+    if (!gpg_configured) {
+      print "Required repository options section missing: [options]" > "/dev/stderr"
+      failed = 1
+    }
     for (repository in required) {
       if (!rewritten[repository]) {
         printf "Required repository section missing: [%s]\n", repository > "/dev/stderr"
