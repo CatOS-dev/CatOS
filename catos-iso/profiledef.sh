@@ -25,5 +25,4 @@ file_permissions=(
   ["/usr/local/bin/Installation_guide"]="0:0:755"
   ["/usr/local/bin/livecd-sound"]="0:0:755"
   ["/usr/local/bin/remove-nvidia"]="0:0:755"
-  ["/usr/local/bin/removeun"]="0:0:755"
 )

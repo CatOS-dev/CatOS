@@ -17,6 +17,7 @@ catos-branding
 catos-calamares
 catos-calamares-config
 catos-fcitx5-config
+catos-fish-config
 catos-grub-theme-dark
 catos-html-wallpaper
 catos-kde-settings
@@ -126,7 +127,7 @@ parted
 partimage
 paru
 pcsclite
-plasma
+plasma-meta
 #plasma6-applets-panel-colorizer
 podman
 power-profiles-daemon
@@ -135,7 +136,6 @@ qemu-guest-agent
 qt6-virtualkeyboard
 rsync
 rxvt-unicode-terminfo
-sddm
 sdparm
 sg3_utils
 smartmontools
@@ -171,9 +171,7 @@ xf86-input-elographics
 xf86-input-evdev
 xf86-input-libinput
 xf86-input-synaptics
-xf86-input-vmmouse
 xf86-input-void
-xf86-video-amdgpu
 xf86-video-fbdev
 xf86-video-qxl
 xfsprogs
