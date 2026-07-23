@@ -1,0 +1,7 @@
+Project: archiso
+Upstream: https://gitlab.archlinux.org/archlinux/archiso.git
+Tag: v88
+Commit: 52bf735fc434aa0bd9d04433dcb70a1313856a1e
+Imported: 2026-07-23
+
+CatOS carries a dedicated uefi.grub.secureboot boot mode and release-signing validation.
