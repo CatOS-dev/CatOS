@@ -26,6 +26,7 @@ catos-keyring
 catos-distroshelf
 catos-hello
 catos-plymouth-theme
+catos-secureboot
 catos-wallpaper-effects
 catos-tela-icon-theme-blue
 clonezilla
@@ -86,6 +87,7 @@ lftp
 libfido2
 libusb-compat
 linux
+linux-headers
 linux-atm
 linux-firmware
 linux-firmware-marvell

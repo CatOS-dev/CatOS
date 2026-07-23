@@ -1,3 +1,8 @@
 *.iso
+__pycache__/
+*.py[cod]
+/out/
+/work/
+/.cache/
 catos-iso/airootfs/var/**
 catos-iso-for-nvidia/airootfs/var/**

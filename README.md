@@ -4,7 +4,7 @@
 
 [**简体中文**](README_zh_CN.md) |  [**English**](README.md)  |  [**Español**](README_ES.md) | [**日本語**](README_JP.md)
 
-[**Overview**](#overview) |  [**Why CatOS?**](#why-catos)  |  [**Download**](#download) | [**Installation**](#installation) | [**Feedback**](#feedback)
+[**Overview**](#overview) |  [**Why CatOS?**](#why-catos)  |  [**Download**](#download) | [**Installation**](#installation) | [**Building**](#building) | [**Feedback**](#feedback)
 </div>
 
 ## <font color=#2f81f7>Overview</font>
@@ -52,6 +52,20 @@ Thanks to the excellent features of Arch Linux, CatOS is a lightweight system th
 ## <font color=#2f81f7>Installation</font>
 
 Ready to install CatOS? Our [**Installation Guide**](https://catos.info/en/docs/installation/installation00) will walk you through the process with ease.
+
+
+## <font color=#2f81f7>Building</font>
+
+CatOS carries a pinned Archiso fork so release behavior does not depend on the host's installed Archiso version. Build prerequisites and Secure Boot material layout are documented in [`secureboot/README.md`](secureboot/README.md).
+
+```bash
+make test
+make doctor
+make iso          # standard image
+make iso-nvidia   # NVIDIA image
+```
+
+Build artifacts are written to `out/`; temporary Archiso state is kept under `/tmp/archiso` and cleaned after each build.
 
 
 ## <font color=#2f81f7>Feedback</font>
