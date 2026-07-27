@@ -11,7 +11,6 @@ TEST_WORK_DIR := /tmp/catos-archiso-test
 TEST_BUILD_LOCK := /tmp/catos-archiso-test.lock
 TEST_PROFILE_DIR := $(ROOT)/.catos-iso-test
 CACHE_DIR := $(ROOT)/.cache
-BUILD_EPOCH := $(shell git -C "$(ROOT)" log -1 --format=%ct)
 OWNER := $(shell id -u):$(shell id -g)
 SECURE_BOOT_DIR := ../secureboot
 FEDORA_SHIM_RPM := $(CACHE_DIR)/shim-x64-16.1-5.x86_64.rpm
@@ -34,22 +33,24 @@ all: iso
 
 iso: doctor
 	@mkdir -p "$(OUT_DIR)"
-	@flock -n "$(BUILD_LOCK)" sudo bash -eu -o pipefail -c '\
+	@build_epoch=$$(date +%s); \
+	flock -n "$(BUILD_LOCK)" sudo env SOURCE_DATE_EPOCH="$$build_epoch" TZ=UTC \
+		bash -eu -o pipefail -c '\
 		cleanup() { rm -rf -- "$(WORK_DIR)"; }; \
 		trap cleanup EXIT INT TERM; \
 		cleanup; \
-		env SOURCE_DATE_EPOCH="$(BUILD_EPOCH)" TZ=UTC \
-			"$(ARCHISO)" -v -w "$(WORK_DIR)" -o "$(OUT_DIR)" "$(ROOT)/catos-iso"; \
+		"$(ARCHISO)" -v -w "$(WORK_DIR)" -o "$(OUT_DIR)" "$(ROOT)/catos-iso"; \
 		chown -R "$(OWNER)" "$(OUT_DIR)"'
 
 iso-nvidia: doctor
 	@mkdir -p "$(OUT_DIR)"
-	@flock -n "$(BUILD_LOCK)" sudo bash -eu -o pipefail -c '\
+	@build_epoch=$$(date +%s); \
+	flock -n "$(BUILD_LOCK)" sudo env SOURCE_DATE_EPOCH="$$build_epoch" TZ=UTC \
+		bash -eu -o pipefail -c '\
 		cleanup() { rm -rf -- "$(WORK_DIR)"; }; \
 		trap cleanup EXIT INT TERM; \
 		cleanup; \
-		env SOURCE_DATE_EPOCH="$(BUILD_EPOCH)" TZ=UTC \
-			"$(ARCHISO)" -v -w "$(WORK_DIR)" -o "$(OUT_DIR)" "$(ROOT)/catos-iso-for-nvidia"; \
+		"$(ARCHISO)" -v -w "$(WORK_DIR)" -o "$(OUT_DIR)" "$(ROOT)/catos-iso-for-nvidia"; \
 		chown -R "$(OWNER)" "$(OUT_DIR)"'
 
 vendor:
@@ -121,15 +122,17 @@ test: doctor
 		"$(ROOT)/catos-iso" "$(TEST_PROFILE_DIR)"; \
 	rm -rf -- "$(TEST_OUT_DIR)"; \
 	mkdir -p "$(TEST_OUT_DIR)"; \
-	flock -n "$(TEST_BUILD_LOCK)" sudo bash -eu -o pipefail -c '\
+	build_epoch=$$(date +%s); \
+	flock -n "$(TEST_BUILD_LOCK)" sudo env SOURCE_DATE_EPOCH="$$build_epoch" TZ=UTC \
+		bash -eu -o pipefail -c '\
 		cleanup() { rm -rf -- "$(TEST_WORK_DIR)"; }; \
 		trap cleanup EXIT INT TERM; \
 		cleanup; \
-		env SOURCE_DATE_EPOCH="$(BUILD_EPOCH)" TZ=UTC \
-			"$(ARCHISO)" -v -w "$(TEST_WORK_DIR)" -o "$(TEST_OUT_DIR)" "$(TEST_PROFILE_DIR)"; \
+		"$(ARCHISO)" -v -w "$(TEST_WORK_DIR)" -o "$(TEST_OUT_DIR)" "$(TEST_PROFILE_DIR)"; \
 		chown -R "$(OWNER)" "$(TEST_OUT_DIR)"'; \
 	python3 "$(ROOT)/tools/verify-test-iso.py" \
 		--certificate "$(SECURE_BOOT_DIR)/catos-release.crt" \
+		--build-epoch "$$build_epoch" \
 		--require-package ckbcomp \
 		--require-package rtkit \
 		"$(TEST_OUT_DIR)"
