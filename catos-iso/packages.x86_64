@@ -138,6 +138,7 @@ pv
 qemu-guest-agent
 qt6-virtualkeyboard
 rsync
+rtkit
 rxvt-unicode-terminfo
 sdparm
 sg3_utils

@@ -131,6 +131,7 @@ test: doctor
 	python3 "$(ROOT)/tools/verify-test-iso.py" \
 		--certificate "$(SECURE_BOOT_DIR)/catos-release.crt" \
 		--require-package ckbcomp \
+		--require-package rtkit \
 		"$(TEST_OUT_DIR)"
 
 check:
