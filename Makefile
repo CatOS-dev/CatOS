@@ -6,6 +6,10 @@ ARCHISO := $(ROOT)/archiso/archiso/mkarchiso
 OUT_DIR := $(ROOT)/out
 WORK_DIR := /tmp/archiso
 BUILD_LOCK := /tmp/catos-archiso.lock
+TEST_OUT_DIR := $(OUT_DIR)/test
+TEST_WORK_DIR := /tmp/catos-archiso-test
+TEST_BUILD_LOCK := /tmp/catos-archiso-test.lock
+TEST_PROFILE_DIR := $(ROOT)/.catos-iso-test
 CACHE_DIR := $(ROOT)/.cache
 BUILD_EPOCH := $(shell git -C "$(ROOT)" log -1 --format=%ct)
 OWNER := $(shell id -u):$(shell id -g)
@@ -22,9 +26,9 @@ SECURE_BOOT_FILES := \
 	$(SECURE_BOOT_DIR)/catos-release.crt
 HOST_COMMANDS := \
 	arch-chroot awk bsdtar curl depmod find flock gzip grub-mkstandalone install mkfs.fat \
-	mcopy mmd modinfo openssl pacstrap sbverify sbsign sha256sum stat xorriso xz zstd
+	mcopy mmd modinfo openssl pacstrap python3 sbverify sbsign sha256sum stat xorriso xz zstd
 
-.PHONY: all iso iso-nvidia vendor doctor test clean distclean
+.PHONY: all iso iso-nvidia test vendor doctor check clean distclean
 
 all: iso
 
@@ -110,13 +114,32 @@ doctor: vendor
 	@sign_file="$$(find /usr/lib/modules /usr/src -path '*/scripts/sign-file' -type f -perm -u+x -print -quit 2>/dev/null)"; \
 		test -n "$$sign_file" || { echo "Missing executable kernel scripts/sign-file; install build-host kernel headers" >&2; exit 1; }
 
-test:
-	python -m unittest discover -s tests -v
+test: doctor
+	@cleanup_profile() { rm -rf -- "$(TEST_PROFILE_DIR)"; }; \
+	trap cleanup_profile EXIT INT TERM; \
+	python3 "$(ROOT)/tools/prepare-test-profile.py" \
+		"$(ROOT)/catos-iso" "$(TEST_PROFILE_DIR)"; \
+	rm -rf -- "$(TEST_OUT_DIR)"; \
+	mkdir -p "$(TEST_OUT_DIR)"; \
+	flock -n "$(TEST_BUILD_LOCK)" sudo bash -eu -o pipefail -c '\
+		cleanup() { rm -rf -- "$(TEST_WORK_DIR)"; }; \
+		trap cleanup EXIT INT TERM; \
+		cleanup; \
+		env SOURCE_DATE_EPOCH="$(BUILD_EPOCH)" TZ=UTC \
+			"$(ARCHISO)" -v -w "$(TEST_WORK_DIR)" -o "$(TEST_OUT_DIR)" "$(TEST_PROFILE_DIR)"; \
+		chown -R "$(OWNER)" "$(TEST_OUT_DIR)"'; \
+	python3 "$(ROOT)/tools/verify-test-iso.py" \
+		--certificate "$(SECURE_BOOT_DIR)/catos-release.crt" \
+		"$(TEST_OUT_DIR)"
+
+check:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/*.py
 	bash -O extglob -n "$(ARCHISO)"
 	bash -n catos-iso/profiledef.sh catos-iso-for-nvidia/profiledef.sh
 
 clean:
 	@flock -n "$(BUILD_LOCK)" sudo rm -rf -- "$(WORK_DIR)"
+	@flock -n "$(TEST_BUILD_LOCK)" sudo rm -rf -- "$(TEST_WORK_DIR)"
 
 distclean: clean
-	rm -rf -- "$(CACHE_DIR)" "$(OUT_DIR)"
+	rm -rf -- "$(CACHE_DIR)" "$(OUT_DIR)" "$(TEST_PROFILE_DIR)"
