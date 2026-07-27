@@ -130,6 +130,7 @@ test: doctor
 		chown -R "$(OWNER)" "$(TEST_OUT_DIR)"'; \
 	python3 "$(ROOT)/tools/verify-test-iso.py" \
 		--certificate "$(SECURE_BOOT_DIR)/catos-release.crt" \
+		--require-package ckbcomp \
 		"$(TEST_OUT_DIR)"
 
 check:
