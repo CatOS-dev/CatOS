@@ -1,0 +1,473 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+
+VM_NAME="catos-docs-vm"
+DEFAULT_ISO="${REPO_ROOT}/out/catos-2026.08.05-x86_64.iso"
+CATOS_MOK_OWNER_GUID="6d2e36b1-0f2e-4a5a-a65b-b7a642c3c531"
+STATE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/catos-docs-vm"
+STATE_DIR="${STATE_ROOT}/default"
+ISO="${DEFAULT_ISO}"
+DISK_SIZE="64G"
+MEMORY_MB="8192"
+CPUS="8"
+VNC_PORT="5909"
+WIDTH="1920"
+HEIGHT="1080"
+SECURE_BOOT=0
+RESET_DISK=0
+BOOT_DEVICE="cdrom"
+REMAINING_ARGS=()
+
+usage() {
+    cat <<'EOF'
+Usage: catos-docs-vm <command> [options] [-- vncdotool commands...]
+
+Commands:
+  start              Start the documentation VM in the background.
+  stop               Gracefully stop the VM, then force-stop on timeout.
+  status             Show VM process, VNC, disk, and screenshot settings.
+  capture FILE       Capture the guest framebuffer and require 1920x1080.
+  wait-resolution    Wait until the guest framebuffer is exactly 1920x1080.
+  vncdo ...          Run arbitrary vncdotool commands against the guest.
+  viewer             Open an interactive VNC viewer for debugging.
+  clean              Stop the VM and remove its ephemeral runtime state.
+
+Options:
+  --iso PATH         ISO image to boot (default: CatOS 2026.08.05 standard ISO).
+  --state-dir PATH   Persistent VM state directory.
+  --vnc-port PORT    Local VNC TCP port (default: 5909).
+  --memory MB        Guest RAM in MiB (default: 8192).
+  --cpus N           Guest vCPUs (default: 8).
+  --disk-size SIZE   Fresh qcow2 size (default: 64G).
+  --reset-disk       Recreate the guest disk before starting.
+  --secure-boot      Boot with real OVMF Secure Boot enabled. A fresh NVRAM
+                     store gets Microsoft platform keys plus the public CatOS
+                     release certificate from the ISO as an enrolled MOK.
+  --boot disk        Prefer the installed virtual disk over the ISO.
+  --boot cdrom       Prefer the ISO (default).
+
+The virtual GPU exposes a 1920x1080 preferred EDID mode. capture and
+wait-resolution additionally verify the real QEMU framebuffer dimensions so a
+scaled host window can never be mistaken for a 1920x1080 documentation image.
+EOF
+}
+
+die() {
+    printf 'catos-docs-vm: %s\n' "$*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+parse_common_options() {
+    while (($#)); do
+        case "$1" in
+            --iso)
+                (($# >= 2)) || die "--iso requires a path"
+                ISO="$2"
+                shift 2
+                ;;
+            --state-dir)
+                (($# >= 2)) || die "--state-dir requires a path"
+                STATE_DIR="$2"
+                shift 2
+                ;;
+            --vnc-port)
+                (($# >= 2)) || die "--vnc-port requires a port"
+                VNC_PORT="$2"
+                shift 2
+                ;;
+            --memory)
+                (($# >= 2)) || die "--memory requires MiB"
+                MEMORY_MB="$2"
+                shift 2
+                ;;
+            --cpus)
+                (($# >= 2)) || die "--cpus requires a count"
+                CPUS="$2"
+                shift 2
+                ;;
+            --disk-size)
+                (($# >= 2)) || die "--disk-size requires a size"
+                DISK_SIZE="$2"
+                shift 2
+                ;;
+            --reset-disk)
+                RESET_DISK=1
+                shift
+                ;;
+            --secure-boot)
+                SECURE_BOOT=1
+                shift
+                ;;
+            --boot)
+                (($# >= 2)) || die "--boot requires cdrom or disk"
+                case "$2" in
+                    cdrom|disk) BOOT_DEVICE="$2" ;;
+                    *) die "unsupported boot device: $2" ;;
+                esac
+                shift 2
+                ;;
+            --)
+                shift
+                REMAINING_ARGS=("$@")
+                return
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                REMAINING_ARGS=("$@")
+                return
+                ;;
+        esac
+    done
+    REMAINING_ARGS=()
+}
+
+runtime_dir() { printf '%s/runtime\n' "${STATE_DIR}"; }
+pid_file() { printf '%s/qemu.pid\n' "$(runtime_dir)"; }
+qmp_socket() { printf '%s/qmp.sock\n' "$(runtime_dir)"; }
+serial_log() { printf '%s/serial.log\n' "$(runtime_dir)"; }
+disk_image() { printf '%s/system.qcow2\n' "${STATE_DIR}"; }
+ovmf_vars() { printf '%s/OVMF_VARS.4m.fd\n' "${STATE_DIR}"; }
+
+prepare_secure_boot_vars() {
+    local template="$1" output="$2" runtime cert clean
+    need bsdtar
+    need uv
+    runtime="$(runtime_dir)"
+    cert="${runtime}/catos-release.cer"
+    clean="${runtime}/OVMF_VARS.clean.fd"
+
+    rm -f -- "${cert}" "${clean}"
+    if ! bsdtar -xOf "${ISO}" catos-release.cer >"${cert}"; then
+        rm -f -- "${cert}"
+        die "CatOS release certificate not found at /catos-release.cer in ISO"
+    fi
+    [[ -s "${cert}" ]] || die "extracted CatOS release certificate is empty"
+
+    cp --reflink=auto -- "${template}" "${clean}"
+    uvx --from virt-firmware virt-fw-vars \
+        -i "${clean}" \
+        --enroll-microsoft \
+        --add-mok "${CATOS_MOK_OWNER_GUID}" "${cert}" \
+        --sb \
+        -o "${output}"
+    rm -f -- "${clean}"
+}
+
+is_running() {
+    local pf pid
+    pf="$(pid_file)"
+    [[ -s "${pf}" ]] || return 1
+    pid="$(cat -- "${pf}")"
+    [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "${pid}" 2>/dev/null
+}
+
+vnc_server() { printf '127.0.0.1::%s\n' "${VNC_PORT}"; }
+
+run_vncdo() {
+    need uv
+    uvx --from vncdotool vncdo \
+        --server="$(vnc_server)" \
+        --timeout=45 \
+        --delay=25 \
+        --nocursor \
+        "$@"
+}
+
+qmp_screendump() {
+    local output="$1"
+    need python
+    python - "$(qmp_socket)" "${output}" <<'PY'
+import json
+import socket
+import sys
+
+socket_path, output = sys.argv[1], sys.argv[2]
+
+def wait_response(stream):
+    while True:
+        line = stream.readline()
+        if not line:
+            raise RuntimeError("QMP connection closed")
+        message = json.loads(line)
+        if "error" in message:
+            raise RuntimeError(message["error"])
+        if "return" in message:
+            return message["return"]
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(10)
+client.connect(socket_path)
+stream = client.makefile("rwb", buffering=0)
+
+greeting = json.loads(stream.readline())
+if "QMP" not in greeting:
+    raise RuntimeError(f"invalid QMP greeting: {greeting!r}")
+
+stream.write(b'{"execute":"qmp_capabilities"}\n')
+wait_response(stream)
+stream.write((json.dumps({
+    "execute": "screendump",
+    "arguments": {"filename": output},
+}) + "\n").encode())
+wait_response(stream)
+client.close()
+PY
+}
+
+check_capture_dimensions() {
+    local image="$1"
+    local actual
+    need magick
+    actual="$(magick identify -format '%wx%h' "${image}")"
+    if [[ "${actual}" != "${WIDTH}x${HEIGHT}" ]]; then
+        printf 'expected framebuffer %sx%s, got %s\n' "${WIDTH}" "${HEIGHT}" "${actual}" >&2
+        return 1
+    fi
+    printf '%s\n' "${actual}"
+}
+
+capture_image() {
+    local output="$1" ppm tmp
+    [[ -n "${output}" ]] || die "capture requires an output file"
+    is_running || die "VM is not running"
+    mkdir -p -- "$(dirname -- "${output}")"
+    output="$(realpath -m -- "${output}")"
+    ppm="${output}.tmp.ppm"
+    tmp="${output}.tmp.png"
+    rm -f -- "${ppm}" "${tmp}"
+    qmp_screendump "${ppm}"
+    if ! check_capture_dimensions "${ppm}"; then
+        rm -f -- "${ppm}" "${tmp}"
+        die "refusing screenshot because guest framebuffer is not ${WIDTH}x${HEIGHT}"
+    fi
+    magick "${ppm}" "${tmp}"
+    rm -f -- "${ppm}"
+    mv -f -- "${tmp}" "${output}"
+    printf 'captured %s (%sx%s)\n' "${output}" "${WIDTH}" "${HEIGHT}"
+}
+
+start_vm() {
+    local runtime code vars_template vars disk boot_order disk_bootindex cdrom_bootindex
+    need qemu-system-x86_64
+    need qemu-img
+    [[ -r "${ISO}" ]] || die "ISO not found: ${ISO}"
+    [[ -c /dev/kvm ]] || die "/dev/kvm is unavailable"
+    is_running && die "VM is already running (pid $(cat -- "$(pid_file)"))"
+
+    runtime="$(runtime_dir)"
+    disk="$(disk_image)"
+    vars="$(ovmf_vars)"
+    mkdir -p -- "${STATE_DIR}" "${runtime}"
+    rm -f -- "$(pid_file)" "$(qmp_socket)"
+
+    if ((RESET_DISK)); then
+        rm -f -- "${disk}"
+    fi
+    if [[ ! -e "${disk}" ]]; then
+        qemu-img create -q -f qcow2 "${disk}" "${DISK_SIZE}"
+    fi
+
+    if ((SECURE_BOOT)); then
+        code="/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd"
+    else
+        code="/usr/share/edk2/x64/OVMF_CODE.4m.fd"
+    fi
+    vars_template="/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+    [[ -r "${code}" ]] || die "OVMF code not found: ${code}"
+    [[ -r "${vars_template}" ]] || die "OVMF vars template not found: ${vars_template}"
+    if [[ ! -e "${vars}" || ${RESET_DISK} -eq 1 ]]; then
+        if ((SECURE_BOOT)); then
+            prepare_secure_boot_vars "${vars_template}" "${vars}"
+        else
+            cp --reflink=auto -- "${vars_template}" "${vars}"
+        fi
+    fi
+
+    case "${BOOT_DEVICE}" in
+        cdrom)
+            boot_order="d"
+            cdrom_bootindex=1
+            disk_bootindex=2
+            ;;
+        disk)
+            boot_order="c"
+            disk_bootindex=1
+            cdrom_bootindex=2
+            ;;
+        *) die "invalid boot device ${BOOT_DEVICE}" ;;
+    esac
+
+    local -a qemu_args=(
+        -name "${VM_NAME},process=${VM_NAME}"
+        -machine q35,accel=kvm,smm=on
+        -cpu host
+        -smp "${CPUS}"
+        -m "${MEMORY_MB}"
+        -boot "order=${boot_order},menu=on,reboot-timeout=5000"
+        -drive "if=pflash,format=raw,unit=0,readonly=on,file=${code}"
+        -drive "if=pflash,format=raw,unit=1,file=${vars}"
+        -global ICH9-LPC.disable_s3=1
+        -device "virtio-vga,xres=${WIDTH},yres=${HEIGHT},edid=on"
+        -display none
+        -vnc "127.0.0.1:$((VNC_PORT - 5900))"
+        -device qemu-xhci
+        -device usb-kbd
+        -device usb-tablet
+        -drive "if=none,id=system,format=qcow2,cache=writeback,discard=unmap,file=${disk}"
+        -device "virtio-blk-pci,drive=system,bootindex=${disk_bootindex}"
+        -drive "if=none,id=cdrom,format=raw,media=cdrom,readonly=on,file=${ISO}"
+        -device "ide-cd,drive=cdrom,bootindex=${cdrom_bootindex}"
+        -netdev user,id=net0
+        -device virtio-net-pci,netdev=net0
+        -rtc base=utc
+        -qmp "unix:$(qmp_socket),server=on,wait=off"
+        -monitor none
+        -serial "file:$(serial_log)"
+        -pidfile "$(pid_file)"
+        -daemonize
+    )
+
+    if ((SECURE_BOOT)); then
+        qemu_args+=(-global driver=cfi.pflash01,property=secure,value=on)
+    else
+        qemu_args+=(-global driver=cfi.pflash01,property=secure,value=off)
+    fi
+
+    qemu-system-x86_64 "${qemu_args[@]}"
+    sleep 0.5
+    is_running || die "QEMU exited before startup completed; inspect $(serial_log)"
+    printf 'started %s (pid %s)\n' "${VM_NAME}" "$(cat -- "$(pid_file)")"
+    printf 'VNC: %s\n' "$(vnc_server)"
+    printf 'preferred framebuffer: %sx%s\n' "${WIDTH}" "${HEIGHT}"
+    printf 'disk: %s\n' "${disk}"
+}
+
+stop_vm() {
+    local pid i
+    if ! is_running; then
+        rm -f -- "$(pid_file)" "$(qmp_socket)"
+        printf 'VM is not running\n'
+        return
+    fi
+    pid="$(cat -- "$(pid_file)")"
+    kill "${pid}"
+    for i in {1..30}; do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            rm -f -- "$(pid_file)" "$(qmp_socket)"
+            printf 'stopped %s\n' "${VM_NAME}"
+            return
+        fi
+        sleep 0.25
+    done
+    kill -KILL "${pid}" 2>/dev/null || true
+    rm -f -- "$(pid_file)" "$(qmp_socket)"
+    printf 'force-stopped %s\n' "${VM_NAME}"
+}
+
+wait_resolution() {
+    local timeout="${1:-180}" deadline probe
+    [[ "${timeout}" =~ ^[0-9]+$ ]] || die "wait-resolution timeout must be seconds"
+    is_running || die "VM is not running"
+    probe="$(runtime_dir)/resolution-probe.ppm"
+    deadline=$((SECONDS + timeout))
+    while ((SECONDS < deadline)); do
+        rm -f -- "${probe}"
+        if qmp_screendump "${probe}" >/dev/null 2>&1 && check_capture_dimensions "${probe}" >/dev/null 2>&1; then
+            rm -f -- "${probe}"
+            printf 'framebuffer reached %sx%s\n' "${WIDTH}" "${HEIGHT}"
+            return
+        fi
+        sleep 2
+    done
+    if [[ -e "${probe}" ]]; then
+        check_capture_dimensions "${probe}" || true
+    fi
+    die "timed out waiting for ${WIDTH}x${HEIGHT} framebuffer after ${timeout}s"
+}
+
+show_status() {
+    printf 'state-dir: %s\n' "${STATE_DIR}"
+    printf 'iso: %s\n' "${ISO}"
+    printf 'disk: %s\n' "$(disk_image)"
+    printf 'vnc: %s\n' "$(vnc_server)"
+    printf 'required framebuffer: %sx%s\n' "${WIDTH}" "${HEIGHT}"
+    if is_running; then
+        printf 'status: running (pid %s)\n' "$(cat -- "$(pid_file)")"
+    else
+        printf 'status: stopped\n'
+    fi
+}
+
+open_viewer() {
+    need remote-viewer
+    is_running || die "VM is not running"
+    remote-viewer "vnc://127.0.0.1:$((VNC_PORT - 5900))" >/dev/null 2>&1 &
+}
+
+clean_runtime() {
+    stop_vm
+    rm -rf -- "$(runtime_dir)"
+}
+
+main() {
+    (($#)) || { usage; exit 2; }
+    local command="$1"
+    shift
+    parse_common_options "$@"
+    set -- "${REMAINING_ARGS[@]}"
+
+    case "${command}" in
+        start)
+            (($# == 0)) || die "unexpected start arguments: $*"
+            start_vm
+            ;;
+        stop)
+            (($# == 0)) || die "unexpected stop arguments: $*"
+            stop_vm
+            ;;
+        status)
+            (($# == 0)) || die "unexpected status arguments: $*"
+            show_status
+            ;;
+        capture)
+            (($# == 1)) || die "capture requires exactly one output file"
+            capture_image "$1"
+            ;;
+        wait-resolution)
+            (($# <= 1)) || die "wait-resolution accepts an optional timeout only"
+            wait_resolution "${1:-180}"
+            ;;
+        vncdo)
+            (($#)) || die "vncdo requires at least one vncdotool command"
+            is_running || die "VM is not running"
+            run_vncdo "$@"
+            ;;
+        viewer)
+            (($# == 0)) || die "viewer takes no extra arguments"
+            open_viewer
+            ;;
+        clean)
+            (($# == 0)) || die "clean takes no extra arguments"
+            clean_runtime
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        *)
+            die "unknown command: ${command}"
+            ;;
+    esac
+}
+
+main "$@"

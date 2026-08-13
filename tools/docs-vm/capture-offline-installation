@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+VM="${SCRIPT_DIR}/catos-docs-vm"
+OUTPUT_DIR="${REPO_ROOT}/../catos-website/static/img/docs"
+STATE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/catos-docs-vm/offline-docs"
+ISO="${REPO_ROOT}/out/catos-2026.08.05-x86_64.iso"
+VNC_PORT="5910"
+
+usage() {
+    cat <<'EOF'
+Usage: capture-offline-installation [--iso PATH] [--output-dir PATH] [--state-dir PATH] [--vnc-port PORT]
+
+Runs a fresh CatOS offline installation under QEMU/KVM and replaces the ten
+install_catos_01.png ... install_catos_10.png documentation screenshots with
+verified 1920x1080 QMP framebuffer captures.
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        --iso)
+            ISO="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --state-dir)
+            STATE_DIR="$2"
+            shift 2
+            ;;
+        --vnc-port)
+            VNC_PORT="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'unknown option: %s\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+mkdir -p -- "${OUTPUT_DIR}"
+
+vm() {
+    local command="$1"
+    shift
+    "${VM}" "${command}" --state-dir "${STATE_DIR}" --vnc-port "${VNC_PORT}" "$@"
+}
+
+shot() {
+    local number="$1"
+    vm capture "${OUTPUT_DIR}/install_catos_${number}.png"
+}
+
+wait_for_live_desktop() {
+    local probe="${STATE_DIR}/runtime/live-probe.png" mean
+    sleep 20
+    for _ in {1..60}; do
+        vm capture "${probe}" >/dev/null
+        mean="$(magick "${probe}" -format '%[fx:mean]' info:)"
+        if awk -v mean="${mean}" 'BEGIN { exit !(mean > 0.20) }'; then
+            rm -f -- "${probe}"
+            sleep 8
+            return
+        fi
+        sleep 5
+    done
+    printf 'timed out waiting for the graphical Live desktop\n' >&2
+    exit 1
+}
+
+is_finish_screen() {
+    local image="$1" rgb
+    rgb="$(magick "${image}" -format '%[fx:255*r] %[fx:255*g] %[fx:255*b]' -crop '1x1+400+580' +repage info:)"
+    awk -v rgb="${rgb}" 'BEGIN {
+        split(rgb, c, " ");
+        exit !(c[1] > 180 && c[2] > 40 && c[2] < 130 && c[3] < 50)
+    }'
+}
+
+wait_for_finish() {
+    local probe="${STATE_DIR}/runtime/finish-probe.png"
+    for _ in {1..90}; do
+        vm capture "${probe}" >/dev/null
+        if is_finish_screen "${probe}"; then
+            mv -f -- "${probe}" "${OUTPUT_DIR}/install_catos_10.png"
+            return
+        fi
+        sleep 10
+    done
+    printf 'timed out waiting for Calamares to finish\n' >&2
+    exit 1
+}
+
+printf 'Stopping previous documentation VM, if any...\n'
+vm stop >/dev/null 2>&1 || true
+
+printf 'Starting fresh CatOS documentation VM...\n'
+vm start --iso "${ISO}" --reset-disk
+vm wait-resolution 180
+wait_for_live_desktop
+
+printf 'Opening the offline installer...\n'
+vm vncdo key alt-f4 pause 1 key alt-f4 pause 1 move 55 42 click 1 click 1 pause 8
+shot 01
+
+printf 'Capturing location and keyboard pages...\n'
+vm vncdo key alt-n pause 3
+shot 02
+vm vncdo key alt-n pause 3
+shot 03
+
+printf 'Selecting the fresh virtual disk...\n'
+vm vncdo key alt-n pause 5 move 555 260 click 1 pause 2
+shot 04
+vm vncdo key alt-n pause 4
+
+printf 'Filling documentation-only test account data...\n'
+vm vncdo type 'CatOS Docs' key tab key ctrl-a type catos key tab key ctrl-a type catos-vm key tab type catosdocs key tab type catosdocs pause 2
+shot 05
+vm vncdo key alt-n pause 5
+shot 06
+
+printf 'Capturing the irreversible-install confirmation...\n'
+vm vncdo key alt-i pause 2
+shot 07
+
+printf 'Starting the installation...\n'
+vm vncdo key alt-i pause 8
+shot 08
+sleep 45
+shot 09
+
+printf 'Waiting for installation completion...\n'
+wait_for_finish
+
+printf 'Stopping VM; installed qcow2 is preserved at %s/system.qcow2\n' "${STATE_DIR}"
+vm stop
+
+printf 'Captured documentation screenshots:\n'
+for image in "${OUTPUT_DIR}"/install_catos_{01..10}.png; do
+    printf '  %s: ' "${image}"
+    magick identify -format '%wx%h\n' "${image}"
+done
