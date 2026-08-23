@@ -142,6 +142,8 @@ rsync
 rtkit
 rxvt-unicode-terminfo
 sdparm
+shelly
+shelly-flatpak-backend
 sg3_utils
 smartmontools
 sof-firmware
